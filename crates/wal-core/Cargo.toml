@@ -1,0 +1,20 @@
+[package]
+name = "wal-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "A crash-safe, segment-based Write-Ahead Log engine"
+
+[dependencies]
+crc32fast.workspace  = true
+thiserror.workspace  = true
+metrics.workspace    = true
+
+[dev-dependencies]
+tempfile.workspace   = true
+criterion.workspace  = true
+
+[[bench]]
+name    = "wal_bench"
+harness = false

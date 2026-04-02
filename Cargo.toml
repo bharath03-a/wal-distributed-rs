@@ -1,0 +1,22 @@
+[workspace]
+members = ["crates/wal-core", "crates/wal-replication"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Bharath Velamala"]
+license = "MIT"
+
+[workspace.dependencies]
+crc32fast   = "1"
+thiserror   = "1"
+tempfile    = "3"
+tokio       = { version = "1", features = ["full"] }
+tonic       = "0.12"
+prost       = "0.13"
+rand        = "0.9"
+tracing     = "0.1"
+futures     = "0.3"
+metrics     = "0.23"
+criterion   = { version = "0.5", features = ["html_reports"] }
