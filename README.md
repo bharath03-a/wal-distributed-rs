@@ -60,6 +60,7 @@ Built as a portfolio project to demonstrate expertise in:
 |---|---|
 | [`wal-core`](crates/wal-core/) | Crash-safe, segment-based WAL engine. Zero async dependencies. |
 | [`wal-replication`](crates/wal-replication/) | Raft consensus layer + gRPC server built on top of `wal-core`. |
+| [`wal-server`](crates/wal-server/) | Standalone binary — run a Raft node with gRPC + HTTP health/metrics. |
 
 ---
 
@@ -119,7 +120,8 @@ Implements the core Raft algorithm from the [Ongaro & Ousterhout (2014)](https:/
 | Log replication | AppendEntries RPC sent to all peers in parallel (`join_all`) |
 | Quorum commits | Entry committed when `⌊n/2⌋ + 1` nodes acknowledge |
 | Fast log backtrack | Conflict index/term hint in AppendEntries response (§5.3) |
-| Crash recovery | Persistent `current_term` + `voted_for`; log replayed from WAL |
+| **Log compaction** | **Snapshot at configurable interval; InstallSnapshot RPC for lagging peers (§7)** |
+| Crash recovery | Persistent `current_term` + `voted_for`; log replayed from WAL; snapshot file recovered on start |
 | Bounded latency | Per-RPC timeout (300 ms) prevents actor deadlocks during elections |
 
 ### Actor model
@@ -271,11 +273,23 @@ brew install protobuf   # macOS
 # Build everything
 cargo build
 
-# Run all tests (unit + integration + cluster)
+# Run all tests (unit + integration + cluster + compaction)
 cargo test
 
 # Run cluster integration tests only
 cargo test -p wal-replication --test cluster_test
+
+# Run log compaction tests only
+cargo test -p wal-replication --test compaction_test
+
+# Run the standalone server (3-node cluster on localhost)
+cargo run -p wal-server -- --id node-1 --addr http://127.0.0.1:7001 \
+  --grpc-port 7001 --peers http://127.0.0.1:7002,http://127.0.0.1:7003 \
+  --peer-ids node-2,node-3 --data-dir /tmp/wal-node-1
+
+# Check health
+curl http://localhost:8080/health
+curl http://localhost:8080/metrics
 
 # Run benchmarks
 cargo bench -p wal-core
@@ -310,7 +324,7 @@ retried, but the cluster recovers automatically.
 ## Roadmap
 
 - [ ] Non-blocking replication (leader pipelines entries without waiting for quorum per write)
-- [ ] Log compaction / snapshotting (Raft §7)
+- [x] Log compaction / snapshotting (Raft §7) — `compact()`, `InstallSnapshot` RPC, crash-safe snapshot file
 - [ ] Membership changes (joint-consensus or single-server changes)
 - [ ] Read-index / lease-based linearisable reads without log append
-- [ ] `wal-server` binary — standalone deployable node with HTTP health endpoint
+- [x] `wal-server` binary — standalone deployable node with gRPC + HTTP health/metrics

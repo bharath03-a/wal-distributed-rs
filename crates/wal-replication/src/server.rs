@@ -13,6 +13,7 @@ use crate::{
         raft_service_server::RaftService,
         wal_service_server::WalService,
         AppendEntriesRequest, AppendEntriesResponse,
+        InstallSnapshotRequest, InstallSnapshotResponse,
         ReadFromRequest, ReadFromResponse,
         RequestVoteRequest, RequestVoteResponse,
         WriteRequest, WriteResponse,
@@ -55,6 +56,18 @@ impl RaftService for RaftServiceImpl {
         let resp = self
             .handle
             .request_vote(request.into_inner())
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(resp))
+    }
+
+    async fn install_snapshot(
+        &self,
+        request: Request<InstallSnapshotRequest>,
+    ) -> Result<Response<InstallSnapshotResponse>, Status> {
+        let resp = self
+            .handle
+            .install_snapshot(request.into_inner())
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(resp))

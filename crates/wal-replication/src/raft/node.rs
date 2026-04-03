@@ -43,12 +43,14 @@ use crate::{
     config::{ClusterConfig, NodeId},
     error::{RaftError, Result},
     proto::wal::{
-        AppendEntriesRequest, AppendEntriesResponse, LogEntry as ProtoEntry,
+        AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest,
+        InstallSnapshotResponse, LogEntry as ProtoEntry,
         RequestVoteRequest, RequestVoteResponse,
     },
 };
 
 use super::log::{LogEntry, RaftLog};
+use super::snapshot::{self, Snapshot};
 use crate::persistent_state::PersistentState;
 use wal_core::WalConfig;
 
@@ -104,6 +106,23 @@ impl PeerClient {
             .await
             .unwrap_or_else(|_| Err(tonic::Status::deadline_exceeded("RequestVote timed out")))
     }
+
+    pub async fn install_snapshot(
+        &self,
+        req: InstallSnapshotRequest,
+    ) -> std::result::Result<InstallSnapshotResponse, tonic::Status> {
+        use crate::proto::wal::raft_service_client::RaftServiceClient;
+        let addr = self.addr.clone();
+        let call = async move {
+            let mut client = RaftServiceClient::connect(addr)
+                .await
+                .map_err(|e| tonic::Status::unavailable(e.to_string()))?;
+            client.install_snapshot(req).await.map(|r| r.into_inner())
+        };
+        tokio::time::timeout(Self::RPC_TIMEOUT, call)
+            .await
+            .unwrap_or_else(|_| Err(tonic::Status::deadline_exceeded("InstallSnapshot timed out")))
+    }
 }
 
 // ── Role ──────────────────────────────────────────────────────────────────────
@@ -125,6 +144,10 @@ pub enum RaftMsg {
     RequestVote {
         req: RequestVoteRequest,
         reply: oneshot::Sender<RequestVoteResponse>,
+    },
+    InstallSnapshot {
+        req: InstallSnapshotRequest,
+        reply: oneshot::Sender<InstallSnapshotResponse>,
     },
     ClientWrite {
         data: Vec<u8>,
@@ -161,6 +184,15 @@ impl RaftHandle {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(RaftMsg::RequestVote { req, reply: tx })
+            .await
+            .map_err(|_| RaftError::Shutdown)?;
+        rx.await.map_err(|_| RaftError::Shutdown)
+    }
+
+    pub async fn install_snapshot(&self, req: InstallSnapshotRequest) -> Result<InstallSnapshotResponse> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(RaftMsg::InstallSnapshot { req, reply: tx })
             .await
             .map_err(|_| RaftError::Shutdown)?;
         rx.await.map_err(|_| RaftError::Shutdown)
@@ -210,6 +242,16 @@ pub struct RaftNode {
     // Election timer
     last_heartbeat: Instant,
     election_timeout: Duration,
+
+    // Log compaction
+    /// Most recent snapshot, if any.
+    snapshot: Option<Snapshot>,
+    /// Compact after this many newly committed entries since the last snapshot.
+    snapshot_trigger: u64,
+    /// Number of entries committed since the last snapshot.
+    entries_since_snapshot: u64,
+    /// Directory for the snapshot file (same as config.data_dir).
+    data_dir: std::path::PathBuf,
 }
 
 impl RaftNode {
@@ -225,6 +267,10 @@ impl RaftNode {
         };
         let log = RaftLog::open(wal_config)?;
 
+        // Load an existing snapshot if one was saved before (crash recovery)
+        let snapshot = Snapshot::load(&config.data_dir)
+            .unwrap_or(None);
+
         let peers: Vec<PeerClient> = config
             .peers
             .iter()
@@ -232,6 +278,7 @@ impl RaftNode {
             .collect();
 
         let election_timeout = random_election_timeout(&config);
+        let data_dir = config.data_dir.clone();
 
         let node = RaftNode {
             id: config.this_node.id.clone(),
@@ -246,6 +293,10 @@ impl RaftNode {
             match_index: HashMap::new(),
             last_heartbeat: Instant::now(),
             election_timeout,
+            snapshot,
+            snapshot_trigger: 100,
+            entries_since_snapshot: 0,
+            data_dir,
         };
 
         let (tx, rx) = mpsc::channel(256);
@@ -300,6 +351,10 @@ impl RaftNode {
             }
             RaftMsg::RequestVote { req, reply } => {
                 let resp = self.on_request_vote(req);
+                let _ = reply.send(resp);
+            }
+            RaftMsg::InstallSnapshot { req, reply } => {
+                let resp = self.on_install_snapshot(req);
                 let _ = reply.send(resp);
             }
             RaftMsg::ClientWrite { data, reply } => {
@@ -540,46 +595,72 @@ impl RaftNode {
         }
 
         self.commit_index = index;
+        self.entries_since_snapshot += 1;
         metrics::counter!(M_COMMITTED).increment(1);
         metrics::gauge!(M_COMMIT_IDX).set(index as f64);
         tracing::debug!("{}: committed index {}", self.id, index);
+
+        // Trigger snapshot if we've accumulated enough entries
+        if self.entries_since_snapshot >= self.snapshot_trigger {
+            if let Err(e) = self.take_snapshot() {
+                tracing::warn!("{}: snapshot failed: {}", self.id, e);
+            }
+        }
+
         Ok(index)
     }
 
-    /// Send AppendEntries to all peers, return total acks (self + peers).
+    /// Send AppendEntries (or InstallSnapshot for lagging peers) to all peers.
+    /// Returns total acks (self + peers).
     async fn replicate_to_peers(&mut self, up_to_index: u64) -> usize {
-        let futures: Vec<_> = self
-            .peers
-            .iter()
-            .map(|peer| {
-                let peer = peer.clone();
-                let req = self.build_append_entries_for(peer.id.clone(), up_to_index);
-                async move {
-                    match peer.append_entries(req).await {
-                        Ok(resp) => (peer.id, resp),
-                        Err(e) => {
-                            tracing::warn!("AppendEntries to {} failed: {}", peer.id, e);
-                            (
-                                peer.id,
-                                AppendEntriesResponse {
-                                    term: 0,
-                                    success: false,
-                                    conflict_index: 0,
-                                    conflict_term: 0,
-                                },
-                            )
-                        }
+        let snapshot_index = self.log.snapshot_index();
+
+        // Split peers into those that need a snapshot vs normal replication
+        let mut ae_futures = Vec::new();
+        let mut snap_futures = Vec::new();
+
+        for peer in &self.peers {
+            let next = *self.next_index.get(&peer.id).unwrap_or(&(up_to_index + 1));
+            if next <= snapshot_index {
+                if let Some(snap) = &self.snapshot {
+                    let req = InstallSnapshotRequest {
+                        term: self.ps.current_term,
+                        leader_id: self.id.clone(),
+                        last_included_index: snap.last_included_index,
+                        last_included_term: snap.last_included_term,
+                        data: snap.data.clone(),
+                    };
+                    let p = peer.clone();
+                    snap_futures.push(async move {
+                        (p.id.clone(), p.install_snapshot(req).await)
+                    });
+                    continue;
+                }
+            }
+            let p = peer.clone();
+            let req = self.build_append_entries_for(peer.id.clone(), up_to_index);
+            ae_futures.push(async move {
+                match p.append_entries(req).await {
+                    Ok(resp) => (p.id, resp),
+                    Err(e) => {
+                        tracing::warn!("AppendEntries to {} failed: {}", p.id, e);
+                        (p.id, AppendEntriesResponse {
+                            term: 0, success: false,
+                            conflict_index: 0, conflict_term: 0,
+                        })
                     }
                 }
-            })
-            .collect();
+            });
+        }
 
-        let results = join_all(futures).await;
+        let ae_results = join_all(ae_futures).await;
+        let snap_results = join_all(snap_futures).await;
+
         let mut acks = 1usize; // self
 
-        for (peer_id, resp) in results {
+        // Process AppendEntries responses
+        for (peer_id, resp) in ae_results {
             if resp.term > self.ps.current_term {
-                // Discovered a higher term: step down
                 let _ = self.ps.advance_term(resp.term);
                 self.become_follower_with_leader(resp.term, None);
                 return acks;
@@ -590,6 +671,27 @@ impl RaftNode {
                 self.next_index.insert(peer_id, up_to_index + 1);
             } else if resp.conflict_index > 0 {
                 self.next_index.insert(peer_id, resp.conflict_index);
+            }
+        }
+
+        // Process InstallSnapshot responses
+        for (peer_id, result) in snap_results {
+            match result {
+                Ok(resp) => {
+                    if resp.term > self.ps.current_term {
+                        let _ = self.ps.advance_term(resp.term);
+                        self.become_follower_with_leader(resp.term, None);
+                        return acks;
+                    }
+                    if resp.success {
+                        // Peer has installed the snapshot; set next_index past it
+                        let snap_idx = self.log.snapshot_index();
+                        self.match_index.insert(peer_id.clone(), snap_idx);
+                        self.next_index.insert(peer_id, snap_idx + 1);
+                        acks += 1;
+                    }
+                }
+                Err(e) => tracing::warn!("InstallSnapshot to {} failed: {}", peer_id, e),
             }
         }
 
@@ -617,6 +719,84 @@ impl RaftNode {
             entries,
             leader_commit: self.commit_index,
         }
+    }
+
+    // ── InstallSnapshot RPC (§7) ──────────────────────────────────────────────
+
+    fn on_install_snapshot(&mut self, req: InstallSnapshotRequest) -> InstallSnapshotResponse {
+        // Reject stale leaders
+        if req.term < self.ps.current_term {
+            return InstallSnapshotResponse { term: self.ps.current_term, success: false };
+        }
+
+        if req.term > self.ps.current_term {
+            let _ = self.ps.advance_term(req.term);
+        }
+        self.become_follower_with_leader(req.term, Some(req.leader_id.clone()));
+
+        // Ignore snapshots we've already moved past
+        if req.last_included_index <= self.log.snapshot_index() {
+            return InstallSnapshotResponse { term: self.ps.current_term, success: true };
+        }
+
+        // Persist snapshot file before resetting the log so crash recovery is safe
+        let snap = Snapshot {
+            last_included_index: req.last_included_index,
+            last_included_term: req.last_included_term,
+            data: req.data,
+        };
+        if let Err(e) = snap.save(&self.data_dir) {
+            tracing::error!("{}: failed to save snapshot: {}", self.id, e);
+            return InstallSnapshotResponse { term: self.ps.current_term, success: false };
+        }
+
+        // Reset the log to start after the snapshot point
+        if let Err(e) = self.log.install_snapshot(req.last_included_index, req.last_included_term) {
+            tracing::error!("{}: failed to install snapshot in log: {}", self.id, e);
+            return InstallSnapshotResponse { term: self.ps.current_term, success: false };
+        }
+
+        self.commit_index = self.commit_index.max(req.last_included_index);
+        self.entries_since_snapshot = 0;
+        self.snapshot = Some(snap);
+
+        tracing::info!(
+            "{}: installed snapshot at index {} (term {})",
+            self.id, req.last_included_index, req.last_included_term
+        );
+
+        InstallSnapshotResponse { term: self.ps.current_term, success: true }
+    }
+
+    // ── Snapshot creation (leader) ────────────────────────────────────────────
+
+    fn take_snapshot(&mut self) -> crate::error::Result<()> {
+        let last_index = self.commit_index;
+        if last_index == 0 {
+            return Ok(());
+        }
+        let last_term = self.log.term_at(last_index).unwrap_or(self.log.snapshot_term());
+
+        // Encode committed entries as snapshot data
+        let committed_entries = self.log.entries_from(self.log.snapshot_index() + 1)
+            .into_iter()
+            .filter(|e| e.index <= last_index)
+            .collect::<Vec<_>>();
+        let data = snapshot::encode_entries(&committed_entries);
+
+        let snap = Snapshot { last_included_index: last_index, last_included_term: last_term, data };
+
+        snap.save(&self.data_dir)?;
+        self.log.compact(last_index, last_term)?;
+
+        tracing::info!(
+            "{}: took snapshot at index {} (term {}), freed {} entries",
+            self.id, last_index, last_term, committed_entries.len()
+        );
+
+        self.entries_since_snapshot = 0;
+        self.snapshot = Some(snap);
+        Ok(())
     }
 
     // ── Heartbeat (leader) ────────────────────────────────────────────────────
