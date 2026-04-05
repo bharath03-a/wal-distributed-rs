@@ -888,13 +888,11 @@ impl RaftNode {
             .collect();
 
         let results = join_all(futures).await;
-        for result in results {
-            if let Ok(resp) = result {
-                if resp.term > self.ps.current_term {
-                    let _ = self.ps.advance_term(resp.term);
-                    self.become_follower_with_leader(resp.term, None);
-                    return;
-                }
+        for resp in results.into_iter().flatten() {
+            if resp.term > self.ps.current_term {
+                let _ = self.ps.advance_term(resp.term);
+                self.become_follower_with_leader(resp.term, None);
+                return;
             }
         }
     }

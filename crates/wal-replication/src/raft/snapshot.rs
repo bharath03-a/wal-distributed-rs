@@ -62,8 +62,8 @@ impl Snapshot {
     pub fn load(dir: &Path) -> io::Result<Option<Self>> {
         let path = snapshot_path(dir);
         match std::fs::File::open(&path) {
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
             Ok(mut f) => {
                 let mut buf = Vec::new();
                 f.read_to_end(&mut buf)?;

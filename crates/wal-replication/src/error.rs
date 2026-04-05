@@ -23,7 +23,7 @@ pub enum RaftError {
     Transport(#[from] tonic::transport::Error),
 
     #[error("gRPC status: {0}")]
-    Status(#[from] tonic::Status),
+    Status(#[from] Box<tonic::Status>),
 }
 
 pub type Result<T> = std::result::Result<T, RaftError>;
