@@ -1,5 +1,8 @@
 # wal-distributed-rs
 
+![CI](https://github.com/bharath03-a/wal-distributed-rs/actions/workflows/ci.yml/badge.svg)
+[![codecov](https://codecov.io/gh/bharath03-a/wal-distributed-rs/badge.svg)](https://codecov.io/gh/bharath03-a/wal-distributed-rs)
+
 A **production-grade Write-Ahead Log** with Raft-based distributed replication, written entirely in Rust.
 
 Built as a portfolio project to demonstrate expertise in:
@@ -12,44 +15,39 @@ Built as a portfolio project to demonstrate expertise in:
 
 ## Architecture
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│  Client (gRPC)                                                       │
-│        │  Write(data)           ReadFrom(index)                      │
-│        ▼                                                             │
-│  ┌─────────────────────────────────────────────────────────────┐    │
-│  │  WalService (tonic gRPC server)                             │    │
-│  └──────────────────────────┬──────────────────────────────────┘    │
-│                             │  RaftHandle (channel)                  │
-│  ┌──────────────────────────▼──────────────────────────────────┐    │
-│  │  RaftNode (tokio actor — single-threaded state machine)      │    │
-│  │                                                              │    │
-│  │  Role: Follower ──► Candidate ──► Leader                    │    │
-│  │                                                              │    │
-│  │  on_append_entries()   on_request_vote()   on_client_write() │    │
-│  └──────────┬───────────────────────────────────────────────────┘    │
-│             │  AppendEntries / RequestVote RPCs                      │
-│             ▼                                                        │
-│  ┌──────────────────────┐    ┌──────────────────────┐               │
-│  │  Peer node (gRPC)    │    │  Peer node (gRPC)    │               │
-│  └──────────────────────┘    └──────────────────────┘               │
-│                                                                      │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  RaftLog                                                      │   │
-│  │  in-memory Vec<LogEntry>  ──persisted to──►  wal-core WAL    │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-│                                                                      │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  wal-core                                                     │   │
-│  │                                                               │   │
-│  │  Wal ──► active Segment ──► BufWriter<File>                  │   │
-│  │       └─► sealed Segment[] (read-only)                       │   │
-│  │                                                               │   │
-│  │  Entry: [seq:u64][len:u32][crc32:u32][data:N]                │   │
-│  │  Files: wal-00000000000000000001.seg  ...                    │   │
-│  │         checkpoint  (last safe-to-truncate LSN)              │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    Client["Client (gRPC)\nWrite(data) / ReadFrom(index)"]
+
+    subgraph Node["Raft Node"]
+        WalSvc["WalService\n(tonic gRPC server)"]
+        RaftNode["RaftNode\n(tokio actor — single-threaded)\nFollower → Candidate → Leader\non_append_entries · on_request_vote · on_client_write"]
+        RaftLog["RaftLog\nin-memory Vec&lt;LogEntry&gt;"]
+
+        subgraph WalCore["wal-core"]
+            Wal["Wal"]
+            ActiveSeg["active Segment\nBufWriter&lt;File&gt;"]
+            SealedSegs["sealed Segment[]\n(read-only)"]
+            Checkpoint["checkpoint\n(last safe-to-truncate LSN)"]
+            EntryFmt["Entry format\n[seq:u64][len:u32][crc32:u32][data:N]"]
+
+            Wal --> ActiveSeg
+            Wal --> SealedSegs
+            Wal --> Checkpoint
+            ActiveSeg -. format .-> EntryFmt
+        end
+
+        WalSvc -- "RaftHandle (channel)" --> RaftNode
+        RaftNode -- "persisted to" --> RaftLog
+        RaftLog -- "append / checkpoint" --> Wal
+    end
+
+    Peer1["Peer node (gRPC)"]
+    Peer2["Peer node (gRPC)"]
+
+    Client -- "Write / ReadFrom" --> WalSvc
+    RaftNode -- "AppendEntries\nRequestVote\nInstallSnapshot" --> Peer1
+    RaftNode -- "AppendEntries\nRequestVote\nInstallSnapshot" --> Peer2
 ```
 
 ---
@@ -238,18 +236,26 @@ cargo bench -p wal-core
 # HTML reports: target/criterion/report/index.html
 ```
 
+![Benchmark output — codec & append](img/img_1.png)
+![Benchmark output — fsync, bulk & recover](img/img_2.png)
+
 Sample results on Apple M-series (debug-profile excluded; `sync_writes = false`):
 
 | Benchmark | Payload | Throughput / Latency |
 |---|---|---|
-| `entry_codec/encode` | 256 B | **47 ns** per entry |
-| `entry_codec/decode` | 256 B | **46 ns** per entry |
-| `append_no_sync` | 64 B | **37 MiB/s** (~612 K entries/s) |
-| `append_no_sync` | 1 KiB | **417 MiB/s** |
-| `append_no_sync` | 4 KiB | **721 MiB/s** |
-| `append_no_sync` | 16 KiB | **>1 GiB/s** |
+| `entry_codec/encode` | 256 B | **46 ns** per entry |
+| `entry_codec/decode` | 256 B | **50 ns** per entry |
+| `append_no_sync` | 64 B | **40 MiB/s** |
+| `append_no_sync` | 256 B | **152 MiB/s** |
+| `append_no_sync` | 1 KiB | **429 MiB/s** |
+| `append_no_sync` | 4 KiB | **693 MiB/s** |
+| `append_no_sync` | 16 KiB | **1.68 GiB/s** |
+| `append_with_fsync` | 256 B | **2.3 ms** per write (SSD-bound) |
+| `append_bulk` | 1 000 entries | **515 K entries/s** |
+| `recover` | 1 000 entries | **129 µs** (7.75 M entries/s) |
+| `segment_rotation` | 100 entries | **32 ms** per rotation |
 
-Throughput scales with payload size because the per-entry overhead (header + CRC) amortises over more bytes. The `fsync` benchmark is storage-device-bound (~5–10 ms per write on a typical SSD).
+Throughput scales with payload size because the per-entry overhead (header + CRC) amortises over more bytes. The `fsync` benchmark is storage-device-bound (~2–3 ms per write on Apple SSD).
 
 Benchmark groups:
 
