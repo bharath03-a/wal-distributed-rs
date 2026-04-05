@@ -75,10 +75,8 @@ impl Snapshot {
                     ));
                 }
 
-                let last_included_index =
-                    u64::from_le_bytes(buf[0..8].try_into().unwrap());
-                let last_included_term =
-                    u64::from_le_bytes(buf[8..16].try_into().unwrap());
+                let last_included_index = u64::from_le_bytes(buf[0..8].try_into().unwrap());
+                let last_included_term = u64::from_le_bytes(buf[8..16].try_into().unwrap());
                 let data_len = u32::from_le_bytes(buf[16..20].try_into().unwrap()) as usize;
 
                 if buf.len() < 20 + data_len {
@@ -89,7 +87,11 @@ impl Snapshot {
                 }
 
                 let data = buf[20..20 + data_len].to_vec();
-                Ok(Some(Self { last_included_index, last_included_term, data }))
+                Ok(Some(Self {
+                    last_included_index,
+                    last_included_term,
+                    data,
+                }))
             }
         }
     }
@@ -136,7 +138,11 @@ pub fn decode_entries(data: &[u8]) -> Option<Vec<crate::raft::log::LogEntry>> {
         }
         let entry_data = data[pos..pos + len].to_vec();
         pos += len;
-        entries.push(LogEntry { index, term, data: entry_data });
+        entries.push(LogEntry {
+            index,
+            term,
+            data: entry_data,
+        });
     }
 
     Some(entries)
@@ -172,9 +178,21 @@ mod tests {
     #[test]
     fn encode_decode_entries_roundtrip() {
         let entries = vec![
-            LogEntry { index: 1, term: 1, data: b"a".to_vec() },
-            LogEntry { index: 2, term: 1, data: b"bb".to_vec() },
-            LogEntry { index: 3, term: 2, data: b"ccc".to_vec() },
+            LogEntry {
+                index: 1,
+                term: 1,
+                data: b"a".to_vec(),
+            },
+            LogEntry {
+                index: 2,
+                term: 1,
+                data: b"bb".to_vec(),
+            },
+            LogEntry {
+                index: 3,
+                term: 2,
+                data: b"ccc".to_vec(),
+            },
         ];
         let bytes = encode_entries(&entries);
         let decoded = decode_entries(&bytes).unwrap();

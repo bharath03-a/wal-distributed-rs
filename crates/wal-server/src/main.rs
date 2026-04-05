@@ -36,12 +36,15 @@ use hyper_util::rt::TokioIo;
 use metrics_exporter_prometheus::PrometheusBuilder;
 use tokio::net::TcpListener;
 use tracing::{info, warn};
-use wal_replication::{ClusterConfig, NodeInfo, RaftNode, start_server};
+use wal_replication::{start_server, ClusterConfig, NodeInfo, RaftNode};
 
 // ── CLI ────────────────────────────────────────────────────────────────────────
 
 #[derive(Parser, Debug)]
-#[command(name = "wal-server", about = "Standalone WAL node with Raft replication")]
+#[command(
+    name = "wal-server",
+    about = "Standalone WAL node with Raft replication"
+)]
 struct Args {
     /// Unique node identifier (e.g. "node-1")
     #[arg(long)]
@@ -99,10 +102,16 @@ async fn main() -> anyhow::Result<()> {
         .peer_ids
         .iter()
         .zip(args.peers.iter())
-        .map(|(id, addr)| NodeInfo { id: id.clone(), addr: addr.clone() })
+        .map(|(id, addr)| NodeInfo {
+            id: id.clone(),
+            addr: addr.clone(),
+        })
         .collect();
 
-    let this_node = NodeInfo { id: args.id.clone(), addr: args.addr.clone() };
+    let this_node = NodeInfo {
+        id: args.id.clone(),
+        addr: args.addr.clone(),
+    };
 
     let config = ClusterConfig::new(this_node, peers, &args.data_dir);
 
@@ -145,7 +154,10 @@ async fn run_http_server(
 
         tokio::spawn(async move {
             if let Err(e) = http1::Builder::new()
-                .serve_connection(io, service_fn(move |req| handle_http(req, h.clone(), p.clone())))
+                .serve_connection(
+                    io,
+                    service_fn(move |req| handle_http(req, h.clone(), p.clone())),
+                )
                 .await
             {
                 warn!("HTTP connection error: {e}");

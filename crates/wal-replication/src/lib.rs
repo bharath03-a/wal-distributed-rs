@@ -55,10 +55,7 @@ use std::net::SocketAddr;
 use tonic::transport::Server;
 
 use crate::{
-    proto::wal::{
-        raft_service_server::RaftServiceServer,
-        wal_service_server::WalServiceServer,
-    },
+    proto::wal::{raft_service_server::RaftServiceServer, wal_service_server::WalServiceServer},
     server::{RaftServiceImpl, WalServiceImpl},
 };
 

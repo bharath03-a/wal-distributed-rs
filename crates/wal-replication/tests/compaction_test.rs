@@ -7,7 +7,7 @@ use std::{net::SocketAddr, time::Duration};
 
 use tempfile::TempDir;
 use tokio::time::sleep;
-use wal_replication::{ClusterConfig, NodeInfo, RaftNode, RaftError, start_server};
+use wal_replication::{start_server, ClusterConfig, NodeInfo, RaftError, RaftNode};
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -40,7 +40,10 @@ impl Cluster {
         let infos: Vec<NodeInfo> = ports
             .iter()
             .enumerate()
-            .map(|(i, &p)| NodeInfo { id: format!("node-{}", i + 1), addr: node_addr(p) })
+            .map(|(i, &p)| NodeInfo {
+                id: format!("node-{}", i + 1),
+                addr: node_addr(p),
+            })
             .collect();
 
         let mut handles = Vec::new();
@@ -67,16 +70,24 @@ impl Cluster {
             let handle = RaftNode::start(cfg).unwrap();
             let addr: SocketAddr = format!("0.0.0.0:{}", ports[i]).parse().unwrap();
             let h2 = handle.clone();
-            tokio::spawn(async move { let _ = start_server(h2, addr).await; });
+            tokio::spawn(async move {
+                let _ = start_server(h2, addr).await;
+            });
             handles.push(handle);
             dirs.push(dir);
         }
 
         sleep(Duration::from_millis(50)).await;
-        Cluster { handles, _dirs: dirs }
+        Cluster {
+            handles,
+            _dirs: dirs,
+        }
     }
 
-    async fn wait_for_leader(&self, timeout: Duration) -> Option<(usize, &wal_replication::RaftHandle)> {
+    async fn wait_for_leader(
+        &self,
+        timeout: Duration,
+    ) -> Option<(usize, &wal_replication::RaftHandle)> {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             for (i, h) in self.handles.iter().enumerate() {
@@ -84,7 +95,9 @@ impl Cluster {
                     return Some((i, h));
                 }
             }
-            if tokio::time::Instant::now() >= deadline { return None; }
+            if tokio::time::Instant::now() >= deadline {
+                return None;
+            }
             sleep(Duration::from_millis(20)).await;
         }
     }
@@ -200,7 +213,10 @@ async fn cluster_commits_survive_across_reads() {
     // it were lowered; here we verify correctness at any threshold.
     let mut last_idx = 0u64;
     for i in 0u8..10 {
-        last_idx = leader.write(format!("payload-{i}").into_bytes()).await.unwrap();
+        last_idx = leader
+            .write(format!("payload-{i}").into_bytes())
+            .await
+            .unwrap();
     }
 
     // Allow replication to propagate

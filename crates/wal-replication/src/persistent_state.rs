@@ -12,7 +12,10 @@
 //!
 //! `voted_for_len == 0` means "not voted in this term".
 
-use std::{fs, path::{Path, PathBuf}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use crate::{config::NodeId, error::Result};
 
@@ -33,7 +36,11 @@ impl PersistentState {
         } else {
             (0, None)
         };
-        Ok(Self { path, current_term: term, voted_for })
+        Ok(Self {
+            path,
+            current_term: term,
+            voted_for,
+        })
     }
 
     /// Flush the current term and vote to disk atomically.

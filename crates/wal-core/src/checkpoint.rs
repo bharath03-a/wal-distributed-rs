@@ -10,7 +10,10 @@
 //! A single little-endian `u64` stored in `<dir>/checkpoint`.
 //! A missing or empty file is treated as checkpoint 0 (nothing applied yet).
 
-use std::{fs, path::{Path, PathBuf}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use crate::error::Result;
 

@@ -10,14 +10,10 @@ use tonic::{Request, Response, Status};
 
 use crate::{
     proto::wal::{
-        raft_service_server::RaftService,
-        wal_service_server::WalService,
-        AppendEntriesRequest, AppendEntriesResponse,
-        InstallSnapshotRequest, InstallSnapshotResponse,
-        ReadFromRequest, ReadFromResponse,
-        RequestVoteRequest, RequestVoteResponse,
-        WriteRequest, WriteResponse,
-        LogEntry as ProtoEntry,
+        raft_service_server::RaftService, wal_service_server::WalService, AppendEntriesRequest,
+        AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
+        LogEntry as ProtoEntry, ReadFromRequest, ReadFromResponse, RequestVoteRequest,
+        RequestVoteResponse, WriteRequest, WriteResponse,
     },
     raft::RaftHandle,
 };
@@ -100,13 +96,11 @@ impl WalService for WalServiceImpl {
                 index,
                 leader_hint: String::new(),
             })),
-            Err(crate::error::RaftError::NotLeader { hint }) => {
-                Ok(Response::new(WriteResponse {
-                    success: false,
-                    index: 0,
-                    leader_hint: hint.unwrap_or_default(),
-                }))
-            }
+            Err(crate::error::RaftError::NotLeader { hint }) => Ok(Response::new(WriteResponse {
+                success: false,
+                index: 0,
+                leader_hint: hint.unwrap_or_default(),
+            })),
             Err(e) => Err(Status::internal(e.to_string())),
         }
     }
@@ -124,9 +118,15 @@ impl WalService for WalServiceImpl {
 
         let proto_entries: Vec<ProtoEntry> = entries
             .into_iter()
-            .map(|e| ProtoEntry { term: e.term, index: e.index, data: e.data })
+            .map(|e| ProtoEntry {
+                term: e.term,
+                index: e.index,
+                data: e.data,
+            })
             .collect();
 
-        Ok(Response::new(ReadFromResponse { entries: proto_entries }))
+        Ok(Response::new(ReadFromResponse {
+            entries: proto_entries,
+        }))
     }
 }

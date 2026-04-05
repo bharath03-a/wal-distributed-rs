@@ -54,8 +54,8 @@ use crate::{
 //
 // These are no-ops unless a `metrics` recorder is installed by the binary
 // (e.g. via `metrics-exporter-prometheus`).
-const METRIC_ENTRIES:   &str = "wal_entries_appended_total";
-const METRIC_BYTES:     &str = "wal_bytes_appended_total";
+const METRIC_ENTRIES: &str = "wal_entries_appended_total";
+const METRIC_BYTES: &str = "wal_bytes_appended_total";
 const METRIC_ROTATIONS: &str = "wal_segment_rotations_total";
 const METRIC_SEG_BYTES: &str = "wal_active_segment_bytes";
 
@@ -128,7 +128,8 @@ impl Wal {
                 .collect();
 
             let active_path = existing.last().unwrap().clone();
-            let active_seg = Segment::open_for_append(active_path.clone(), config.max_segment_bytes)?;
+            let active_seg =
+                Segment::open_for_append(active_path.clone(), config.max_segment_bytes)?;
 
             // Determine next_sequence from the highest LSN on disk
             let next_seq = highest_sequence_on_disk(&active_path, &sealed_ids, &config.dir)?
@@ -138,7 +139,13 @@ impl Wal {
             (active_seg, sealed_ids, next_seq)
         };
 
-        Ok(Self { config, active, sealed, checkpoint, next_sequence })
+        Ok(Self {
+            config,
+            active,
+            sealed,
+            checkpoint,
+            next_sequence,
+        })
     }
 
     /// Append raw bytes to the WAL and return the assigned sequence number.

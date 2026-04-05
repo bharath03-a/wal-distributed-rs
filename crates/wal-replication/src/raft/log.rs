@@ -117,7 +117,12 @@ impl RaftLog {
             }
         }
 
-        Ok(Self { entries, wal, snapshot_index, snapshot_term })
+        Ok(Self {
+            entries,
+            wal,
+            snapshot_index,
+            snapshot_term,
+        })
     }
 
     // ── Write path ────────────────────────────────────────────────────────────
@@ -125,7 +130,11 @@ impl RaftLog {
     /// Append a new entry at the end of the log. Returns the assigned index.
     pub fn append(&mut self, term: u64, data: &[u8]) -> Result<u64> {
         let index = self.last_index() + 1;
-        let entry = LogEntry { term, index, data: data.to_vec() };
+        let entry = LogEntry {
+            term,
+            index,
+            data: data.to_vec(),
+        };
         let payload = encode_append(&entry);
         self.wal.append(&payload)?;
         self.entries.push(entry);
@@ -208,7 +217,10 @@ impl RaftLog {
     }
 
     pub fn last_term(&self) -> u64 {
-        self.entries.last().map(|e| e.term).unwrap_or(self.snapshot_term)
+        self.entries
+            .last()
+            .map(|e| e.term)
+            .unwrap_or(self.snapshot_term)
     }
 
     /// Term of the entry at `index`, or `None` if out of range / compacted.
@@ -244,7 +256,10 @@ impl RaftLog {
         if term == self.snapshot_term && self.snapshot_index > 0 {
             return Some(self.snapshot_index);
         }
-        self.entries.iter().find(|e| e.term == term).map(|e| e.index)
+        self.entries
+            .iter()
+            .find(|e| e.term == term)
+            .map(|e| e.index)
     }
 
     /// All entries currently in memory (after the snapshot point).
@@ -439,6 +454,6 @@ mod tests {
         log.append(1, b"b").unwrap();
         log.compact(2, 1).unwrap();
         assert_eq!(log.term_at(2), Some(1)); // snapshot_term
-        assert_eq!(log.term_at(1), None);    // compacted
+        assert_eq!(log.term_at(1), None); // compacted
     }
 }

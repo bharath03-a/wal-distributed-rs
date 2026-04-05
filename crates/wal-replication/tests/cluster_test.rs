@@ -7,7 +7,7 @@ use std::{net::SocketAddr, time::Duration};
 
 use tempfile::TempDir;
 use tokio::time::sleep;
-use wal_replication::{ClusterConfig, NodeInfo, RaftNode, start_server};
+use wal_replication::{start_server, ClusterConfig, NodeInfo, RaftNode};
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -84,18 +84,41 @@ impl Cluster {
         // Give gRPC servers a moment to bind before the first election round
         sleep(Duration::from_millis(50)).await;
 
-        Cluster { handles, _dirs: dirs }
+        Cluster {
+            handles,
+            _dirs: dirs,
+        }
     }
 
     /// Poll each node for `write()` success to discover the leader.
-    /// Returns the handle of the leader node and its index within `handles`.
-    async fn wait_for_leader(&self, timeout: Duration) -> Option<(usize, &wal_replication::RaftHandle)> {
+    /// Returns the index and handle of the current leader.
+    async fn wait_for_leader(
+        &self,
+        timeout: Duration,
+    ) -> Option<(usize, &wal_replication::RaftHandle)> {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             for (i, h) in self.handles.iter().enumerate() {
-                // A tiny probe write to see if this node is the leader
                 if h.write(b"probe".to_vec()).await.is_ok() {
                     return Some((i, h));
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return None;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Write `data` to whichever node is currently the leader, retrying on
+    /// re-elections until `timeout` expires. Avoids races where the leader
+    /// identity changes between `wait_for_leader` and a subsequent write.
+    async fn write(&self, data: Vec<u8>, timeout: Duration) -> Option<u64> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            for h in &self.handles {
+                if let Ok(idx) = h.write(data.clone()).await {
+                    return Some(idx);
                 }
             }
             if tokio::time::Instant::now() >= deadline {
@@ -113,31 +136,39 @@ async fn test_leader_is_elected() {
     let cluster = Cluster::start().await;
     // Give nodes time to elect a leader
     let leader = cluster.wait_for_leader(Duration::from_secs(3)).await;
-    assert!(leader.is_some(), "a leader should be elected within 3 seconds");
+    assert!(
+        leader.is_some(),
+        "a leader should be elected within 3 seconds"
+    );
 }
 
 #[tokio::test]
 async fn test_write_to_leader_succeeds() {
     let cluster = Cluster::start().await;
-    let (_, leader) = cluster
+    cluster
         .wait_for_leader(Duration::from_secs(3))
         .await
         .expect("no leader elected");
 
-    let idx = leader.write(b"hello distributed WAL".to_vec()).await.unwrap();
-    // The probe write in wait_for_leader is index 1, so our write is 2
+    let idx = cluster
+        .write(b"hello distributed WAL".to_vec(), Duration::from_secs(2))
+        .await
+        .expect("write timed out");
     assert!(idx >= 1, "write should return a positive index");
 }
 
 #[tokio::test]
 async fn test_entries_replicated_to_all_nodes() {
     let cluster = Cluster::start().await;
-    let (leader_i, leader) = cluster
+    let (leader_i, _) = cluster
         .wait_for_leader(Duration::from_secs(3))
         .await
         .expect("no leader elected");
 
-    let idx = leader.write(b"replicated entry".to_vec()).await.unwrap();
+    let idx = cluster
+        .write(b"replicated entry".to_vec(), Duration::from_secs(2))
+        .await
+        .expect("write timed out");
 
     // Give followers a moment to receive the committed entry
     sleep(Duration::from_millis(200)).await;
@@ -145,11 +176,15 @@ async fn test_entries_replicated_to_all_nodes() {
     // Every node (including the leader) should see this entry
     for (i, handle) in cluster.handles.iter().enumerate() {
         let entries = handle.read_from(1).await.unwrap();
-        let found = entries.iter().any(|e| e.index == idx && e.data == b"replicated entry");
+        let found = entries
+            .iter()
+            .any(|e| e.index == idx && e.data == b"replicated entry");
         assert!(
             found,
             "node {} (leader={}) should have entry at index {}",
-            i, i == leader_i, idx
+            i,
+            i == leader_i,
+            idx
         );
     }
 }
@@ -157,7 +192,7 @@ async fn test_entries_replicated_to_all_nodes() {
 #[tokio::test]
 async fn test_multiple_writes_maintain_order() {
     let cluster = Cluster::start().await;
-    let (_, leader) = cluster
+    cluster
         .wait_for_leader(Duration::from_secs(3))
         .await
         .expect("no leader elected");
@@ -165,7 +200,11 @@ async fn test_multiple_writes_maintain_order() {
     let payloads = [b"tx-1".as_ref(), b"tx-2".as_ref(), b"tx-3".as_ref()];
     let mut indices = Vec::new();
     for p in &payloads {
-        indices.push(leader.write(p.to_vec()).await.unwrap());
+        let idx = cluster
+            .write(p.to_vec(), Duration::from_secs(2))
+            .await
+            .expect("write timed out");
+        indices.push(idx);
     }
 
     // Indices must be strictly increasing
@@ -184,7 +223,9 @@ async fn test_follower_rejects_write() {
 
     // Pick a follower
     let follower_i = if leader_i == 0 { 1 } else { 0 };
-    let result = cluster.handles[follower_i].write(b"should fail".to_vec()).await;
+    let result = cluster.handles[follower_i]
+        .write(b"should fail".to_vec())
+        .await;
     assert!(
         matches!(result, Err(wal_replication::RaftError::NotLeader { .. })),
         "follower must reject writes with NotLeader"

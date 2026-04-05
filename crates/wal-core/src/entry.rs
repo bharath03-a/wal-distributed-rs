@@ -76,7 +76,13 @@ pub fn decode(buf: &[u8], buf_offset: usize) -> Result<(Entry, usize)> {
         });
     }
 
-    Ok((Entry { sequence, data: data.to_vec() }, total))
+    Ok((
+        Entry {
+            sequence,
+            data: data.to_vec(),
+        },
+        total,
+    ))
 }
 
 #[cfg(test)]

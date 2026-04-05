@@ -165,12 +165,11 @@ pub fn segment_path(dir: &Path, id: u64) -> PathBuf {
 
 /// Parse the numeric segment ID from a path like `wal-00000000000000000001.seg`.
 pub fn segment_id_from_path(path: &Path) -> Result<u64> {
-    let filename = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| WalError::InvalidSegmentFilename {
+    let filename = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
+        WalError::InvalidSegmentFilename {
             filename: path.display().to_string(),
-        })?;
+        }
+    })?;
 
     let numeric = filename
         .strip_prefix(PREFIX)
@@ -179,9 +178,11 @@ pub fn segment_id_from_path(path: &Path) -> Result<u64> {
             filename: filename.to_owned(),
         })?;
 
-    numeric.parse::<u64>().map_err(|_| WalError::InvalidSegmentFilename {
-        filename: filename.to_owned(),
-    })
+    numeric
+        .parse::<u64>()
+        .map_err(|_| WalError::InvalidSegmentFilename {
+            filename: filename.to_owned(),
+        })
 }
 
 /// Return all segment paths in `dir`, sorted ascending by segment ID.
@@ -237,7 +238,8 @@ mod tests {
         let dir = tmp();
         let mut seg = Segment::create(dir.path(), 1, DEFAULT_MAX_SEGMENT_BYTES).unwrap();
         for i in 1u64..=5 {
-            seg.append(&entry::encode(i, format!("entry {i}").as_bytes())).unwrap();
+            seg.append(&entry::encode(i, format!("entry {i}").as_bytes()))
+                .unwrap();
         }
         seg.flush().unwrap();
 
@@ -273,13 +275,19 @@ mod tests {
             Segment::create(dir.path(), id, DEFAULT_MAX_SEGMENT_BYTES).unwrap();
         }
         let paths = list_segments(dir.path()).unwrap();
-        let ids: Vec<u64> = paths.iter().map(|p| segment_id_from_path(p).unwrap()).collect();
+        let ids: Vec<u64> = paths
+            .iter()
+            .map(|p| segment_id_from_path(p).unwrap())
+            .collect();
         assert_eq!(ids, vec![1, 2, 3, 4, 5]);
     }
 
     #[test]
     fn invalid_filename_returns_error() {
         let result = segment_id_from_path(Path::new("/tmp/notasegment.txt"));
-        assert!(matches!(result, Err(WalError::InvalidSegmentFilename { .. })));
+        assert!(matches!(
+            result,
+            Err(WalError::InvalidSegmentFilename { .. })
+        ));
     }
 }

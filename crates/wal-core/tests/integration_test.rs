@@ -108,7 +108,7 @@ fn recover_replays_only_entries_after_checkpoint() {
         wal.append(b"tx-2 committed").unwrap();
         wal.checkpoint(2).unwrap();
         wal.append(b"tx-3 in-flight").unwrap(); // not checkpointed
-        // Process "crashes" here (WAL is dropped)
+                                                // Process "crashes" here (WAL is dropped)
     }
 
     // --- Recovery run ---
@@ -160,7 +160,11 @@ fn sequence_continues_after_reopen() {
 
     let mut wal = Wal::open(config).unwrap();
     let next = wal.append(b"entry C").unwrap();
-    assert_eq!(next, last_seq + 1, "sequence must be gapless across reopens");
+    assert_eq!(
+        next,
+        last_seq + 1,
+        "sequence must be gapless across reopens"
+    );
 }
 
 #[test]
@@ -211,7 +215,10 @@ fn truncate_removes_sealed_segments_before_threshold() {
         entries.iter().all(|e| e.sequence >= 10),
         "no entry before threshold should remain"
     );
-    assert!(!entries.is_empty(), "entries at and above threshold must survive");
+    assert!(
+        !entries.is_empty(),
+        "entries at and above threshold must survive"
+    );
 }
 
 // ── Edge cases ────────────────────────────────────────────────────────────────
