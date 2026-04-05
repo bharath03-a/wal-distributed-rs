@@ -72,6 +72,7 @@ impl PeerClient {
     /// which would otherwise cause a deadlock between two concurrently-blocked actors.
     const RPC_TIMEOUT: Duration = Duration::from_millis(300);
 
+    #[allow(clippy::result_large_err)]
     pub async fn append_entries(
         &self,
         req: AppendEntriesRequest,
@@ -89,6 +90,7 @@ impl PeerClient {
             .unwrap_or_else(|_| Err(tonic::Status::deadline_exceeded("AppendEntries timed out")))
     }
 
+    #[allow(clippy::result_large_err)]
     pub async fn request_vote(
         &self,
         req: RequestVoteRequest,
@@ -106,6 +108,7 @@ impl PeerClient {
             .unwrap_or_else(|_| Err(tonic::Status::deadline_exceeded("RequestVote timed out")))
     }
 
+    #[allow(clippy::result_large_err)]
     pub async fn install_snapshot(
         &self,
         req: InstallSnapshotRequest,
